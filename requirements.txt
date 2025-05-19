@@ -1,7 +1,9 @@
-Flask
-pandas
-numpy
-scikit-learn
-scikit-learn-extra    # for KMeans with sample_weight support
-shapely
-folium
+Flask==2.2.5
+pandas==1.5.3
+numpy==1.24.2
+scikit-learn==1.2.1
+xgboost==1.7.5
+shapely==2.0.1
+alphashape==1.1.2
+dimod==0.11.5
+gunicorn==20.1.0
