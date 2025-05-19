@@ -66,7 +66,7 @@ def train_models(csv_path="west_nile_virus_data.csv"):
 def build_grid(xgb_model, mlp_model, concave,
                year, week,
                lat_bounds, lon_bounds,
-               step=0.00225):
+               step=0.005):
     time_now = year + (week - 1)/52.0
     sin_w    = sin(2*np.pi*(week - 1)/52.0)
     cos_w    = cos(2*np.pi*(week - 1)/52.0)
