@@ -4,17 +4,14 @@ import numpy as np
 import xgboost as xgb
 from sklearn.neural_network import MLPClassifier
 from datetime import datetime
-from shapely.geometry import shape, Point, MultiPoint
+from shapely.geometry import shape, Point
 import alphashape
 import dimod
+from dimod.reference.samplers import SimulatedAnnealingSampler
 from itertools import combinations
 from math import radians, sin, cos, sqrt, atan2
 
 app = Flask(__name__)
-
-# ——————————————————————————————————————————————
-# Helpers
-# ——————————————————————————————————————————————
 
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371.0
@@ -28,9 +25,8 @@ def train_models(csv_path="west_nile_virus_data.csv"):
     df = pd.read_csv(csv_path).dropna(
         subset=['Latitude','Longitude','RESULT','SEASON YEAR','WEEK']
     )
-    df['RESULT_BIN'] = (df['RESULT'] == 'positive').astype(int)
+    df['RESULT_BIN'] = (df['RESULT']=='positive').astype(int)
 
-    # continuous + cyclical time features
     df['time']     = df['SEASON YEAR'] + (df['WEEK'] - 1)/52.0
     df['week_sin'] = np.sin(2*np.pi*(df['WEEK'] - 1)/52.0)
     df['week_cos'] = np.cos(2*np.pi*(df['WEEK'] - 1)/52.0)
@@ -38,7 +34,6 @@ def train_models(csv_path="west_nile_virus_data.csv"):
     features = ['Latitude','Longitude','time','week_sin','week_cos']
     X, y = df[features], df['RESULT_BIN']
 
-    # XGBoost
     xgb_model = xgb.XGBClassifier(
         n_estimators=200,
         max_depth=6,
@@ -48,7 +43,6 @@ def train_models(csv_path="west_nile_virus_data.csv"):
     )
     xgb_model.fit(X, y)
 
-    # scikit‐learn MLP
     mlp_model = MLPClassifier(
         hidden_layer_sizes=(64,32),
         activation='relu',
@@ -57,7 +51,6 @@ def train_models(csv_path="west_nile_virus_data.csv"):
     )
     mlp_model.fit(X, y)
 
-    # concave hull for lake clipping
     points = [(lon, lat) for lat, lon in zip(df['Latitude'], df['Longitude'])]
     concave = alphashape.alphashape(points, alpha=0.02)
 
@@ -71,72 +64,69 @@ def build_grid(xgb_model, mlp_model, concave,
     sin_w    = sin(2*np.pi*(week - 1)/52.0)
     cos_w    = cos(2*np.pi*(week - 1)/52.0)
 
-    features = ['Latitude','Longitude','time','week_sin','week_cos']
     lat_min, lat_max = lat_bounds
     lon_min, lon_max = lon_bounds
 
-    pts = []
+    rows = []
     for lat in np.arange(lat_min, lat_max+step, step):
         for lon in np.arange(lon_min, lon_max+step, step):
-            pts.append((lat, lon, time_now, sin_w, cos_w))
-    grid_df = pd.DataFrame(pts, columns=features)
+            rows.append((lat, lon, time_now, sin_w, cos_w))
+    grid_df = pd.DataFrame(
+        rows,
+        columns=['Latitude','Longitude','time','week_sin','week_cos']
+    )
 
-    # clip to concave hull
     mask = [
         concave.contains(Point(lon, lat))
         for lat, lon in zip(grid_df['Latitude'], grid_df['Longitude'])
     ]
     grid_df = grid_df[mask].reset_index(drop=True)
 
-    # predict & ensemble
-    Xg = grid_df[features]
+    Xg = grid_df[['Latitude','Longitude','time','week_sin','week_cos']]
     grid_df['risk_xgb'] = xgb_model.predict_proba(Xg)[:,1]
     grid_df['risk_mlp'] = mlp_model.predict_proba(Xg)[:,1]
     grid_df['risk']     = 0.5 * (grid_df['risk_xgb'] + grid_df['risk_mlp'])
 
-    return (
-      grid_df,
-      grid_df['risk'].min(),
-      grid_df['risk'].max()
-    )
+    return grid_df, grid_df['risk'].min(), grid_df['risk'].max()
 
-def select_traps(sub_df, K, K1=3, C=0.5, lam=1.0, M=200):
+def select_traps(sub_df, K, K1=3, C=0.5, lam=1.0, M=200, penalty=10.0):
     candidates = sub_df.nlargest(M, 'risk').reset_index(drop=True)
-    risks = candidates['risk'].values
+    risks      = candidates['risk'].values
+    N          = len(candidates)
 
-    from dimod import ConstrainedQuadraticModel, Binary, QuickSampler
-    cqm = ConstrainedQuadraticModel()
-    x_vars = {i: Binary(f'x{i}') for i in range(len(candidates))}
-
-    expr = 0
+    bqm = dimod.BinaryQuadraticModel({}, {}, 0.0, dimod.Vartype.BINARY)
     for i, r in enumerate(risks):
-        expr += (C - r) * x_vars[i]
-    for i, j in combinations(range(len(candidates)), 2):
+        bqm.add_variable(i, C - r)
+    for i, j in combinations(range(N), 2):
         lat1, lon1 = candidates.loc[i, ['Latitude','Longitude']]
         lat2, lon2 = candidates.loc[j, ['Latitude','Longitude']]
         d = haversine(lat1, lon1, lat2, lon2)
-        if d > 0:
-            expr += (lam/d) * x_vars[i] * x_vars[j]
-    cqm.set_objective(expr)
-    cqm.add_constraint(sum(x_vars.values()) == K1, label='budget')
+        if d>0:
+            bqm.add_interaction(i, j, lam / d)
 
-    sampler = QuickSampler()
-    ss = sampler.sample_cqm(cqm, time_limit=5)
-    sol = ss.first.sample
-    chosen = [i for i, v in sol.items() if v]
+    A = penalty
+    lin_pen = A * (1 - 2*K1)
+    for i in range(N):
+        bqm.add_variable(i, lin_pen)
+    quad_pen = 2 * A
+    for i, j in combinations(range(N), 2):
+        bqm.add_interaction(i, j, quad_pen)
+
+    sampler = SimulatedAnnealingSampler()
+    ss = sampler.sample(bqm, num_reads=50)
+    best = ss.first.sample
+    chosen = [i for i, bit in best.items() if bit == 1]
 
     selected = set(chosen)
-    for _ in range(K - K1):
-        best_i = max(
-            (i for i in range(len(candidates)) if i not in selected),
+    for _ in range(K - len(selected)):
+        i_best = max(
+            (i for i in range(N) if i not in selected),
             key=lambda i: risks[i]
         )
-        selected.add(best_i)
+        selected.add(i_best)
 
     return candidates.loc[list(selected), ['Latitude','Longitude']].values.tolist()
 
-# ——————————————————————————————————————————————
-# Flask routes
 # ——————————————————————————————————————————————
 
 @app.route('/')
@@ -154,10 +144,11 @@ def grid_data():
         xgb_model, mlp_model, concave,
         year, week,
         lat_bounds=(41.6445,42.0230),
-        lon_bounds=(-87.9409,-87.5237)
+        lon_bounds=(-87.9409,-87.5237),
+        step=0.005
     )
     return jsonify(
-        grid = grid_df[['Latitude','Longitude','risk']].to_dict(orient='records'),
+        grid     = grid_df[['Latitude','Longitude','risk']].to_dict(orient='records'),
         min_risk = min_risk,
         max_risk = max_risk
     )
@@ -166,20 +157,25 @@ def grid_data():
 def traps():
     data = request.get_json()
     K, year, week = data['num_traps'], data['year'], data['week']
+    app.logger.info(f"traps requested K={K}, year={year}, week={week}")
+    app.logger.info(f"polygon geojson: {data['polygon']}")
     poly = shape(data['polygon'])
     xgb_model, mlp_model, concave = train_models()
     grid_df, _, _ = build_grid(
         xgb_model, mlp_model, concave,
         year, week,
         lat_bounds=(41.6445,42.0230),
-        lon_bounds=(-87.9409,-87.5237)
+        lon_bounds=(-87.9409,-87.5237),
+        step=0.005
     )
     mask = [
-        poly.contains(Point(lon, lat))
+        poly.covers(Point(lon, lat))      # <-- use covers instead of contains
         for lat, lon in zip(grid_df['Latitude'], grid_df['Longitude'])
     ]
+    inside = sum(mask)
+    app.logger.info(f"{inside} grid points inside polygon")
     sub = grid_df[mask].copy()
-    centers = select_traps(sub, K)
+    centers = select_traps(sub, K) if inside>0 else []
     return jsonify(centers=centers)
 
 if __name__ == '__main__':
