@@ -1,0 +1,7 @@
+Flask
+pandas
+numpy
+scikit-learn
+scikit-learn-extra    # for KMeans with sample_weight support
+shapely
+folium
