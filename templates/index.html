@@ -1,153 +1,235 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
+  <meta charset="utf-8" />
   <title>WNV Risk Map</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
   <!-- Leaflet CSS & JS -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
   <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
-  <!-- Leaflet Draw -->
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css"/>
+
+  <!-- Leaflet Draw CSS & JS -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
-  <!-- Leaflet Heatmap Plugin -->
+
+  <!-- Leaflet Heatmap -->
   <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
 
   <style>
-    body { margin:0; }
-    #controls { padding:8px; background:#fff; font-family: sans-serif; }
-    #map { height:90vh; }
-    .trap-label { font-size:12px; color:#fff; background:#000; padding:2px 4px; border-radius:3px; }
-    #loading { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); background:rgba(255,255,255,0.8); padding:20px; border-radius:8px; display:none; align-items:center; justify-content:center; font-size:16px; z-index:1000; }
-    #loading .spinner { border:4px solid #f3f3f3; border-top:4px solid #3498db; border-radius:50%; width:24px; height:24px; animation:spin 1s linear infinite; margin-right:10px; }
-    @keyframes spin { 0%{transform:rotate(0deg);} 100%{transform:rotate(360deg);} }
+    body { margin: 0; }
+    #controls {
+      padding: 8px;
+      background: #fff;
+      font-family: sans-serif;
+    }
+    #map { height: 90vh; }
+
+    .trap-pin {
+      position: relative;
+      background: #d00;
+      color: white;
+      font-weight: bold;
+      border-radius: 50% 50% 50% 0;
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transform: rotate(-45deg);
+      box-shadow: 0 0 3px #000;
+      font-size: 12px;
+    }
+    .trap-pin span {
+      transform: rotate(45deg);
+    }
+
+    .legend {
+      display: inline-block;
+      margin-left: 16px;
+      font-size: 14px;
+      color: #333;
+    }
+    input[type=number] { width: 60px; }
+
+    #loadingOverlay {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(255,255,255,0.8);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+
+    .spinner {
+      border: 6px solid #ccc;
+      border-top: 6px solid #333;
+      border-radius: 50%;
+      width: 40px;
+      height: 40px;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
   </style>
 </head>
 <body>
+
   <div id="controls">
-    Year: <input id="yearInput" type="number" min="2000" max="2100" value="{{ sel_year }}"/>
-    Week: <input id="weekInput" type="number" min="1" max="52" value="{{ sel_week }}"/>
-    <button id="goButton">Go</button>
-    &nbsp;&nbsp;# Traps: <input id="trapInput" type="number" min="1" max="50" value="5" style="width:60px"/>
+    Year:
+    <input id="yearInput" type="number" min="2000" max="2100" value="2025">
+    Week:
+    <input id="weekInput" type="number" min="1" max="52" value="20">
+    <button id="updateMap">Go</button>
+    &nbsp;&nbsp;
+    # Traps:
+    <input id="trapInput" type="number" min="1" max="50" value="5">
+    <span class="legend">Each pin ≈ 500 m spacing</span>
   </div>
 
   <div id="map"></div>
-  <div id="loading"><div class="spinner"></div>Loading...</div>
+  <div id="loadingOverlay"><div class="spinner"></div></div>
 
   <script>
-    let map, heatLayer, riskLayer, trapLayer, currentPoly;
-    let minRisk, maxRisk;
-    const heatThreshold = 13;  // zoom level to switch
+    let minRisk = 0, maxRisk = 1;
+    let currentPoly = null;
+    let heatLayer = null;
+
+    const loadingOverlay = document.getElementById('loadingOverlay');
 
     function interpColor(r) {
       const ratio = (r - minRisk)/(maxRisk - minRisk);
-      const red = 255;
+      const red   = 255;
       const green = Math.floor(255*(1-ratio));
-      const blue = Math.floor(224*(1-ratio));
-      return `#${red.toString(16).padStart(2,'0')}${green.toString(16).padStart(2,'0')}${blue.toString(16).padStart(2,'0')}`;
+      const blue  = Math.floor(224*(1-ratio));
+      return `#${red.toString(16).padStart(2,'0')}`
+           + `${green.toString(16).padStart(2,'0')}`
+           + `${blue.toString(16).padStart(2,'0')}`;
     }
 
-    function showLoading(on) {
-      document.getElementById('loading').style.display = on ? 'flex' : 'none';
-    }
+    const map = L.map('map').setView([41.8781, -87.6298], 11);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+      attribution: '© OpenStreetMap, © CartoDB'
+    }).addTo(map);
 
-    function initMap() {
-      map = L.map('map').setView([41.8781, -87.6298], 11);
-      L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', { attribution:'© OpenStreetMap, © CartoDB' }).addTo(map);
+    const riskLayer = L.layerGroup().addTo(map);
+    const trapLayer = L.layerGroup().addTo(map);
 
-      heatLayer = L.heatLayer([], { radius: 25, blur: 15, gradient: {0:'yellow',0.5:'orange',1:'red'} }).addTo(map);
-      riskLayer = L.layerGroup().addTo(map);
-      trapLayer = L.layerGroup().addTo(map);
+    const drawControl = new L.Control.Draw({
+      draw: {
+        polygon: true, marker: false, polyline: false,
+        rectangle: false, circle: false, circlemarker: false
+      },
+      edit: { featureGroup: new L.FeatureGroup().addTo(map) }
+    });
+    map.addControl(drawControl);
 
-      const drawControl = new L.Control.Draw({
-        draw: { polygon:true, marker:false, polyline:false, rectangle:false, circle:false, circlemarker:false },
-        edit: { featureGroup: new L.FeatureGroup().addTo(map) }
-      });
-      map.addControl(drawControl);
+    const yearInput = document.getElementById('yearInput');
+    const weekInput = document.getElementById('weekInput');
+    const trapInput = document.getElementById('trapInput');
 
-      map.on(L.Draw.Event.CREATED, e => {
-        if (currentPoly) map.removeLayer(currentPoly);
-        currentPoly = e.layer;
-        map.addLayer(currentPoly);
-        updateTraps();
-      });
+    function drawRisk(data) {
+      minRisk = data.min_risk;
+      maxRisk = data.max_risk;
+      riskLayer.clearLayers();
+      if (heatLayer) map.removeLayer(heatLayer);
 
-      map.on('zoomend', () => {
-        const z = map.getZoom();
-        if (z < heatThreshold) {
-          if (!map.hasLayer(heatLayer)) map.addLayer(heatLayer);
-          if (map.hasLayer(riskLayer)) map.removeLayer(riskLayer);
-        } else {
-          if (!map.hasLayer(riskLayer)) map.addLayer(riskLayer);
-          if (map.hasLayer(heatLayer)) map.removeLayer(heatLayer);
+      const heatData = [];
+
+      data.grid.forEach(p => {
+        const ratio = (p.risk - minRisk)/(maxRisk - minRisk);
+        heatData.push([p.Latitude, p.Longitude, ratio]);
+        if (map.getZoom() > 12) {
+          L.circleMarker([p.Latitude, p.Longitude], {
+            radius: 4,
+            color: interpColor(p.risk),
+            fillOpacity: 0.2 + 0.6 * ratio,
+            weight: 0
+          })
+          .bindPopup(`Risk: ${p.risk.toFixed(4)}`)
+          .addTo(riskLayer);
         }
       });
+
+      heatLayer = L.heatLayer(heatData, {
+        radius: 20,
+        blur: 15,
+        maxZoom: 12,
+        minOpacity: 0.3
+      });
+
+      if (map.getZoom() <= 12) {
+        heatLayer.addTo(map);
+      }
     }
 
     function updateRisk() {
-      showLoading(true);
-      const year = +document.getElementById('yearInput').value;
-      const week = +document.getElementById('weekInput').value;
-
-      fetch(`/grid?year=${year}&week=${week}`)
-        .then(res => res.json())
-        .then(data => {
-          minRisk = data.min_risk;
-          maxRisk = data.max_risk;
-
-          // heatmap points
-          const heatPts = data.grid.map(p => [p.Latitude, p.Longitude, (p.risk - minRisk)/(maxRisk - minRisk)]);
-          heatLayer.setLatLngs(heatPts);
-
-          // circle markers at exact grid points
-          riskLayer.clearLayers();
-          data.grid.forEach(p => {
-            const ratio = (p.risk - minRisk)/(maxRisk - minRisk);
-            L.circleMarker([p.Latitude, p.Longitude], {
-              radius: 4,
-              color: interpColor(p.risk),
-              fillOpacity: 0.2 + 0.6 * ratio,
-              weight: 0
-            })
-            .bindPopup(`Risk: ${p.risk.toFixed(4)}`)
-            .addTo(riskLayer);
-          });
-        })
-        .finally(() => { showLoading(false); updateTraps(); });
+      const y = +yearInput.value, w = +weekInput.value;
+      fetch(`/grid?year=${y}&week=${w}`)
+        .then(r => r.json())
+        .then(drawRisk)
+        .catch(e => console.error("grid fetch failed:", e));
     }
 
     function updateTraps() {
       if (!currentPoly) return;
-      showLoading(true);
-      const K    = +document.getElementById('trapInput').value;
-      const year = +document.getElementById('yearInput').value;
-      const week = +document.getElementById('weekInput').value;
+      const K = +trapInput.value;
+      const y = +yearInput.value, w = +weekInput.value;
+
+      loadingOverlay.style.display = 'flex';
 
       fetch('/traps', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ num_traps: K, polygon: currentPoly.toGeoJSON().geometry, year, week })
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({
+          num_traps: K,
+          polygon: currentPoly.toGeoJSON().geometry,
+          year: y, week: w
+        })
       })
-      .then(res => res.json())
+      .then(r => r.json())
       .then(data => {
         trapLayer.clearLayers();
         data.centers.forEach((c, i) => {
           L.marker([c[0], c[1]], {
-            icon: L.divIcon({ className: 'trap-label', html: `${i+1}` })
+            icon: L.divIcon({
+              className: '',
+              html: `<div class="trap-pin"><span>${i+1}</span></div>`,
+              iconSize: [24, 24],
+              iconAnchor: [12, 24],
+              popupAnchor: [0, -24]
+            })
           })
           .bindPopup(`Trap #${i+1}`)
           .addTo(trapLayer);
         });
       })
-      .finally(() => showLoading(false));
+      .catch(e => console.error("traps fetch failed:", e))
+      .finally(() => {
+        loadingOverlay.style.display = 'none';
+      });
     }
 
-    document.getElementById('goButton').addEventListener('click', updateRisk);
-    document.getElementById('trapInput').addEventListener('change', updateTraps);
+    document.getElementById('updateMap').addEventListener('click', updateRisk);
 
-    initMap();
-    updateRisk();
+    map.on('draw:created', e => {
+      if (currentPoly) map.removeLayer(currentPoly);
+      currentPoly = e.layer;
+      map.addLayer(currentPoly);
+      updateTraps();
+    });
+
+    trapInput.addEventListener('input', updateTraps);
+    trapInput.addEventListener('change', updateTraps);
+
+    map.on('zoomend', updateRisk);
+    updateRisk(); // Initial load
   </script>
 </body>
 </html>
