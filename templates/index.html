@@ -13,9 +13,6 @@
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
 
-  <!-- Leaflet Heatmap -->
-  <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
-
   <style>
     body { margin: 0; }
     #controls {
@@ -97,9 +94,11 @@
   <div id="loadingOverlay"><div class="spinner"></div></div>
 
   <script>
+    // Replace this with your Render backend URL:
+    const API_BASE = "https://your-backend.onrender.com";
+
     let minRisk = 0, maxRisk = 1;
     let currentPoly = null;
-    let heatLayer = null;
 
     const loadingOverlay = document.getElementById('loadingOverlay');
 
@@ -138,58 +137,51 @@
       minRisk = data.min_risk;
       maxRisk = data.max_risk;
       riskLayer.clearLayers();
-      if (heatLayer) map.removeLayer(heatLayer);
-
-      const heatData = [];
 
       data.grid.forEach(p => {
         const ratio = (p.risk - minRisk)/(maxRisk - minRisk);
-        heatData.push([p.Latitude, p.Longitude, ratio]);
-        if (map.getZoom() > 12) {
-          L.circleMarker([p.Latitude, p.Longitude], {
-            radius: 4,
-            color: interpColor(p.risk),
-            fillOpacity: 0.2 + 0.6 * ratio,
-            weight: 0
-          })
-          .bindPopup(`Risk: ${p.risk.toFixed(4)}`)
-          .addTo(riskLayer);
-        }
+        L.circleMarker([p.Latitude, p.Longitude], {
+          radius: 4,
+          color: interpColor(p.risk),
+          fillOpacity: 0.2 + 0.6 * ratio,
+          weight: 0
+        })
+        .bindPopup(`Risk: ${p.risk.toFixed(4)}`)
+        .addTo(riskLayer);
       });
-
-      heatLayer = L.heatLayer(heatData, {
-        radius: 20,
-        blur: 15,
-        maxZoom: 12,
-        minOpacity: 0.3
-      });
-
-      if (map.getZoom() <= 12) {
-        heatLayer.addTo(map);
-      }
     }
 
     function updateRisk() {
       const y = +yearInput.value, w = +weekInput.value;
-      fetch(`/grid?year=${y}&week=${w}`)
+      fetch(`${API_BASE}/grid?year=${y}&week=${w}`)
         .then(r => r.json())
         .then(drawRisk)
-        .catch(e => console.error("grid fetch failed:", e));
+        .catch(e => {
+          console.error("grid fetch failed:", e);
+          alert("Error loading risk data.");
+        });
     }
 
     function updateTraps() {
-      if (!currentPoly) return;
+      if (!currentPoly) {
+        alert("Please draw a polygon first.");
+        return;
+      }
+
       const K = +trapInput.value;
       const y = +yearInput.value, w = +weekInput.value;
 
       loadingOverlay.style.display = 'flex';
 
-      fetch('/traps', {
+      const polyData = currentPoly.toGeoJSON().geometry;
+      console.log("Sending polygon to backend:", polyData);
+
+      fetch(`${API_BASE}/traps`, {
         method: 'POST',
-        headers: {'Content-Type':'application/json'},
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           num_traps: K,
-          polygon: currentPoly.toGeoJSON().geometry,
+          polygon: polyData,
           year: y, week: w
         })
       })
@@ -210,7 +202,10 @@
           .addTo(trapLayer);
         });
       })
-      .catch(e => console.error("traps fetch failed:", e))
+      .catch(e => {
+        console.error("traps fetch failed:", e);
+        alert("Error placing traps.");
+      })
       .finally(() => {
         loadingOverlay.style.display = 'none';
       });
@@ -228,7 +223,6 @@
     trapInput.addEventListener('input', updateTraps);
     trapInput.addEventListener('change', updateTraps);
 
-    map.on('zoomend', updateRisk);
     updateRisk(); // Initial load
   </script>
 </body>
