@@ -1,4 +1,5 @@
 from flask import Flask, render_template, request, jsonify
+from flask_cors import CORS  # ✅ NEW
 import pandas as pd
 import numpy as np
 import xgboost as xgb
@@ -12,6 +13,7 @@ from itertools import combinations
 from math import radians, sin, cos, sqrt, atan2
 
 app = Flask(__name__)
+CORS(app)  # ✅ Allow CORS from any frontend domain (like onrender.com)
 
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371.0
@@ -101,7 +103,7 @@ def select_traps(sub_df, K, K1=3, C=0.5, lam=1.0, M=200, penalty=10.0):
         lat1, lon1 = candidates.loc[i, ['Latitude','Longitude']]
         lat2, lon2 = candidates.loc[j, ['Latitude','Longitude']]
         d = haversine(lat1, lon1, lat2, lon2)
-        if d>0:
+        if d > 0:
             bqm.add_interaction(i, j, lam / d)
 
     A = penalty
@@ -143,14 +145,14 @@ def grid_data():
     grid_df, min_risk, max_risk = build_grid(
         xgb_model, mlp_model, concave,
         year, week,
-        lat_bounds=(41.6445,42.0230),
-        lon_bounds=(-87.9409,-87.5237),
+        lat_bounds=(41.6445, 42.0230),
+        lon_bounds=(-87.9409, -87.5237),
         step=0.005
     )
     return jsonify(
-        grid     = grid_df[['Latitude','Longitude','risk']].to_dict(orient='records'),
-        min_risk = min_risk,
-        max_risk = max_risk
+        grid=grid_df[['Latitude', 'Longitude', 'risk']].to_dict(orient='records'),
+        min_risk=min_risk,
+        max_risk=max_risk
     )
 
 @app.route('/traps', methods=['POST'])
@@ -160,22 +162,25 @@ def traps():
     app.logger.info(f"traps requested K={K}, year={year}, week={week}")
     app.logger.info(f"polygon geojson: {data['polygon']}")
     poly = shape(data['polygon'])
+
     xgb_model, mlp_model, concave = train_models()
     grid_df, _, _ = build_grid(
         xgb_model, mlp_model, concave,
         year, week,
-        lat_bounds=(41.6445,42.0230),
-        lon_bounds=(-87.9409,-87.5237),
+        lat_bounds=(41.6445, 42.0230),
+        lon_bounds=(-87.9409, -87.5237),
         step=0.005
     )
+
     mask = [
-        poly.covers(Point(lon, lat))      # <-- use covers instead of contains
+        poly.covers(Point(lon, lat))
         for lat, lon in zip(grid_df['Latitude'], grid_df['Longitude'])
     ]
     inside = sum(mask)
     app.logger.info(f"{inside} grid points inside polygon")
+
     sub = grid_df[mask].copy()
-    centers = select_traps(sub, K) if inside>0 else []
+    centers = select_traps(sub, K) if inside > 0 else []
     return jsonify(centers=centers)
 
 if __name__ == '__main__':
