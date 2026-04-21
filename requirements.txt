@@ -4,7 +4,8 @@ numpy
 scikit-learn
 scikit-learn-extra    # for KMeans with sample_weight support
 shapely
-foliumgunicorn
+folium
+gunicorn
 flask
 flask-cors
 numpy
