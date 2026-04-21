@@ -56,6 +56,16 @@ app.config["DEBUG"] = False
 
 memory = Memory(location="./cache_dir", verbose=0)
 
+import traceback
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    print("SERVER ERROR:")
+    traceback.print_exc()
+    return jsonify({
+        "error": str(e),
+        "trace": traceback.format_exc()
+    }), 500
 
 # ============================================================
 # CONSTANTS / UTILS
@@ -447,7 +457,10 @@ def _build_glm_target_on_grid(grid_df: pd.DataFrame) -> Optional[np.ndarray]:
         str(MOSQ_META.get("default_trap_type_mode", "GRAVID"))
         if isinstance(MOSQ_META, dict) else "GRAVID"
     )
-    tmp["TRAP_TYPE"] = default_trap_type
+    if "TRAP_TYPE" not in tmp.columns:
+        tmp["TRAP_TYPE"] = default_trap_type
+    else:
+        tmp["TRAP_TYPE"] = tmp["TRAP_TYPE"].fillna(default_trap_type)
 
     species_levels = set([s.upper().strip() for s in MOSQ_META.get("species_levels", []) if isinstance(s, str)])
     trap_levels = set([t.upper().strip() for t in MOSQ_META.get("trap_type_levels", []) if isinstance(t, str)])
@@ -460,7 +473,7 @@ def _build_glm_target_on_grid(grid_df: pd.DataFrame) -> Optional[np.ndarray]:
         safe_trap = default_trap_type.upper().strip()
         if safe_trap not in trap_levels:
             safe_trap = next(iter(trap_levels))
-        tmp.loc[~tmp["TRAP_TYPE"].isin(trap_levels), "TRAP_TYPE"] = safe_trap
+        tmp.loc[~tmp["TRAP_TYPE"].astype(str).str.upper().isin(trap_levels), "TRAP_TYPE"] = safe_trap
 
     for c in ["Latitude", "Longitude", "Year", "Week", "temp", "humidity", "rain", "wind_speed", "sin_week", "cos_week"]:
         tmp[c] = pd.to_numeric(tmp[c], errors="coerce").fillna(0.0)
@@ -472,7 +485,6 @@ def _build_glm_target_on_grid(grid_df: pd.DataFrame) -> Optional[np.ndarray]:
             design_info = getattr(model_data, "design_info", None)
         except Exception:
             design_info = None
-
         if design_info is not None:
             from patsy import build_design_matrices
             exog = build_design_matrices([design_info], tmp, return_type="dataframe")[0]
@@ -487,6 +499,7 @@ def _build_glm_target_on_grid(grid_df: pd.DataFrame) -> Optional[np.ndarray]:
     except Exception as e:
         print("[WARN] GLM bridge calibration failed:", repr(e))
         return None
+
 
 def _local_empirical_target_surface(
     grid_df: pd.DataFrame,
@@ -1790,7 +1803,12 @@ def build_grid(
 
         if model_ab is not None:
             try:
-                design_info = getattr(model_ab.model.data, "design_info", None)
+                design_info = None
+                try:
+                    model_data = getattr(getattr(model_ab, "model", None), "data", None)
+                    design_info = getattr(model_data, "design_info", None)
+                except Exception:
+                    design_info = None
                 if design_info is not None:
                     from patsy import build_design_matrices
                     exog = build_design_matrices([design_info], grid_df, return_type="dataframe")[0]
