@@ -19,3 +19,17 @@ scipy
 patsy
 dimod
 dwave-neal
+flask
+flask-cors
+gunicorn
+numpy
+pandas
+requests
+scikit-learn
+joblib
+shapely
+alphashape
+scipy
+patsy
+dimod
+dwave-neal
