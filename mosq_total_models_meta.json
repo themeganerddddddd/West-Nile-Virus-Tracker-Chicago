@@ -1,0 +1,38 @@
+{
+  "formula": "num_mosq ~ Latitude + Longitude + Year + Week + sin_week + cos_week + temp + humidity + rain + wind_speed + C(SPECIES) + C(TRAP_TYPE)",
+  "alpha_mom": 1.5372595751102762,
+  "columns_used": [
+    "Latitude",
+    "Longitude",
+    "Year",
+    "Week",
+    "sin_week",
+    "cos_week",
+    "temp",
+    "humidity",
+    "rain",
+    "wind_speed",
+    "SPECIES",
+    "TRAP_TYPE"
+  ],
+  "n_rows": 25071,
+  "aic_poisson": 392932.9968017108,
+  "aic_nb": 170369.41346781777,
+  "species_levels": [
+    "CULEX ERRATICUS",
+    "CULEX PIPIENS",
+    "CULEX PIPIENS/RESTUANS",
+    "CULEX RESTUANS",
+    "CULEX SALINARIUS",
+    "CULEX TARSALIS",
+    "CULEX TERRITANS",
+    "UNSPECIFIED CULEX"
+  ],
+  "trap_type_levels": [
+    "CDC",
+    "GRAVID",
+    "OVI",
+    "SENTINEL"
+  ],
+  "default_trap_type_mode": "GRAVID"
+}

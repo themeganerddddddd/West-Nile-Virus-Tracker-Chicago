@@ -1,0 +1,643 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>WNV Risk Map</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- Leaflet CSS & JS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+  <!-- Leaflet Draw -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css"/>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+
+  <style>
+    body { margin:0; padding-top:72px; }
+    .controls {
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      background: #fff;
+      padding: 8px 10px;
+      display: flex; flex-wrap: wrap; gap: 8px 12px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      font-family: sans-serif;
+      z-index: 1000;
+      align-items: center;
+    }
+    .controls label { display:flex; align-items:center; gap:6px; white-space: nowrap; }
+    .controls input[type="number"] { width:70px; }
+    .controls input[type="checkbox"] { transform: scale(1.05); }
+    #map { position:absolute; top:72px; bottom:0; left:0; right:0; }
+
+    /* Spray pin sits above everything */
+    .trap-pin {
+      background:#d00; color:#fff;
+      width:24px; height:24px;
+      display:flex; align-items:center; justify-content:center;
+      border-radius:50%;
+      box-shadow:0 0 3px #000;
+      font-size:12px;
+      position: relative;
+      z-index: 9999;
+    }
+    .trap-pin span { line-height:24px; }
+
+    #loadingOverlay {
+      position:absolute; top:72px; left:0; right:0; bottom:0;
+      background:rgba(255,255,255,0.8);
+      display:none; align-items:center; justify-content:center;
+      z-index:1100;
+    }
+    .spinner {
+      border:6px solid #ccc; border-top:6px solid #333;
+      border-radius:50%; width:40px; height:40px;
+      animation:spin 1s linear infinite;
+    }
+    @keyframes spin { 0%{transform:rotate(0deg);}100%{transform:rotate(360deg);} }
+    .divider { width:1px; height:22px; background:#e6e6e6; margin:0 4px; }
+    button { cursor:pointer; }
+
+    /* tiny info icon */
+    .info-btn{
+      width:18px;height:18px;border-radius:50%;
+      border:1px solid #bbb;background:#fff;color:#555;
+      display:inline-flex;align-items:center;justify-content:center;
+      font-size:12px;line-height:18px;cursor:pointer;
+      margin-left:4px;
+    }
+
+    /* Small status text */
+    .status {
+      font-size: 12px;
+      color: #444;
+      margin-left: 6px;
+      white-space: nowrap;
+      max-width: 520px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .status b { font-weight: 700; }
+
+    /* Put spray markers above circleMarkers via pane */
+    .leaflet-pane.leaflet-spray-pane { z-index: 950; }
+    .leaflet-pane.leaflet-risk-pane  { z-index: 410; } /* below marker pane (600) */
+  </style>
+</head>
+
+<body>
+  <div class="controls">
+    <label>Year:<input id="yearInput" type="number" min="2000" max="2100" value="2025"></label>
+    <label>Week:<input id="weekInput" type="number" min="1" max="53" value="27"></label>
+
+    <div class="divider"></div>
+
+    <label>Temp:<input id="weatherTemp" type="number" value="20" step="0.1"></label>
+    <label>Humid:<input id="weatherHumidity" type="number" value="50"></label>
+    <label>Rain:<input id="weatherRain" type="number" value="0" step="0.1"></label>
+    <label>Wind:<input id="weatherWind" type="number" value="2" step="0.1"></label>
+
+    <div class="divider"></div>
+
+    <label>
+      <input type="checkbox" id="usePopulation" checked> Use Population
+      <span class="info-btn" id="popInfo" title="What is pop weight?">i</span>
+    </label>
+    <label>PopStr:<input id="popStrength" type="number" value="1.0" step="0.1"></label>
+    <label>PopRad:<input id="popRadius" type="number" value="1.0" step="0.1"></label>
+
+    <div class="divider"></div>
+
+    <label>
+      HistStr:<input id="histStrength" type="number" value="0.45" step="0.05" min="0" max="1">
+      <span class="info-btn" id="histInfo" title="What is HistStr?">i</span>
+    </label>
+    <label>HistRad:<input id="histRadius" type="number" value="1.5" step="0.1" min="0.1"></label>
+
+    <label><input type="checkbox" id="smoothFinal" checked> Smooth</label>
+    <label>SmoothK:<input id="smoothK" type="number" value="60" step="5" min="5"></label>
+    <label>SmoothSig:<input id="smoothSigma" type="number" value="0.9" step="0.1" min="0.1"></label>
+
+    <div class="divider"></div>
+
+    <label>Sprays:<input id="sprayCount" type="number" value="5" min="1"></label>
+    <label>SprayR:<input id="sprayRadiusInput" type="number" value="1.0" step="0.1" min="0.1"></label>
+
+    <label><input type="checkbox" id="showBefore" checked> Pre</label>
+    <label><input type="checkbox" id="showAfter"> Post</label>
+
+    <button id="updateMap">Update Risk</button>
+    <button id="planSprayBtn">Plan Spray</button>
+
+    <!-- Debug/status line for weather + backend meta -->
+    <span class="status" id="statusLine">Ready.</span>
+    <!-- NEW: mosquito totals line -->
+    <span class="status" id="mosqTotalsLine"></span>
+  </div>
+
+  <div id="loadingOverlay"><div class="spinner"></div></div>
+  <div id="map"></div>
+
+  <script>
+  document.addEventListener('DOMContentLoaded', () => {
+    const API_BASE = ""; // set to your backend base URL if separate
+
+    // We keep TWO min/max ranges (raw vs pop) so the toggle doesn’t “break” colors
+    let minRisk = 0, maxRisk = 1;           // active range (whatever you're viewing)
+    let minRiskRaw = 0, maxRiskRaw = 1;     // backend-provided raw range
+    let minRiskPop = 0, maxRiskPop = 1;     // backend-provided pop range
+
+    let currentPoly = null;
+    const loadingOverlay = document.getElementById('loadingOverlay');
+    const statusLine = document.getElementById('statusLine');
+
+    function setStatus(msg) {
+      statusLine.textContent = msg;
+    }
+
+    // Map
+    const map = L.map('map').setView([41.8781, -87.6298], 11);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png', {
+      attribution:'&copy; CARTO &copy; OS', maxZoom:19
+    }).addTo(map);
+
+    // panes so risk dots are below spray markers
+    map.createPane('riskPane');
+    map.getPane('riskPane').classList.add('leaflet-risk-pane');
+
+    map.createPane('sprayPane');
+    map.getPane('sprayPane').classList.add('leaflet-spray-pane');
+
+    // Layers
+    const riskLayer   = L.layerGroup([], { pane: 'riskPane' }).addTo(map);
+    const beforeLayer = L.layerGroup([], { pane: 'riskPane' }).addTo(map);
+    const afterLayer  = L.layerGroup([], { pane: 'riskPane' }).addTo(map);
+    const sprayLayer  = L.layerGroup([], { pane: 'sprayPane' }).addTo(map);
+
+    // Draw control (rectangle only)
+    const drawnItems = new L.FeatureGroup().addTo(map);
+    map.addControl(new L.Control.Draw({
+      draw:{ rectangle:true, polygon:false, polyline:false, circle:false, marker:false, circlemarker:false },
+      edit:{ featureGroup: drawnItems }
+    }));
+    map.on('draw:created', e => {
+      drawnItems.clearLayers();
+      currentPoly = e.layer;
+      drawnItems.addLayer(currentPoly);
+      planSpray();
+    });
+
+    // Inputs
+    const yearInput        = document.getElementById('yearInput');
+    const weekInput        = document.getElementById('weekInput');
+    const weatherTemp      = document.getElementById('weatherTemp');
+    const weatherHumidity  = document.getElementById('weatherHumidity');
+    const weatherRain      = document.getElementById('weatherRain');
+    const weatherWind      = document.getElementById('weatherWind');
+
+    const usePopulation    = document.getElementById('usePopulation');
+    const popStrength      = document.getElementById('popStrength');
+    const popRadius        = document.getElementById('popRadius');
+
+    const histStrength     = document.getElementById('histStrength');
+    const histRadius       = document.getElementById('histRadius');
+    const smoothFinal      = document.getElementById('smoothFinal');
+    const smoothK          = document.getElementById('smoothK');
+    const smoothSigma      = document.getElementById('smoothSigma');
+
+    const sprayCount       = document.getElementById('sprayCount');
+    const sprayRadiusInput = document.getElementById('sprayRadiusInput');
+
+    const showBefore       = document.getElementById('showBefore');
+    const showAfter        = document.getElementById('showAfter');
+    const updateBtn        = document.getElementById('updateMap');
+    const planSprayBtn     = document.getElementById('planSprayBtn');
+
+    // Info buttons
+    const popInfo = document.getElementById('popInfo');
+    const histInfo = document.getElementById('histInfo');
+
+    popInfo.addEventListener('click', () => {
+      alert(
+        "Population weight (pop_weight) is a 0..1 scaling of local population density across the grid.\n\n" +
+        "If Use Population is ON, the model multiplies risk by:\n" +
+        "  pop_multiplier = (1 + PopStr * pop_weight)\n\n" +
+        "So PopStr controls how strongly population shifts the risk surface."
+      );
+    });
+
+    histInfo.addEventListener('click', () => {
+      alert(
+        "HistStr (history strength) blends your current model risk with a historical surface built from past positives.\n\n" +
+        "  risk_blend = (1 - HistStr) * model_risk + HistStr * history_kde\n\n" +
+        "HistStr=0 → only model\n" +
+        "HistStr=1 → only history\n\n" +
+        "Yes: the model uses weather inputs (temp, humidity, rain, wind) in the features."
+      );
+    });
+
+    // Exclusive toggles
+    showBefore.addEventListener('change', () => {
+      if (showBefore.checked) showAfter.checked = false;
+      redrawFromCacheOrFetch();
+    });
+    showAfter.addEventListener('change', () => {
+      if (showAfter.checked) showBefore.checked = false;
+      planSpray();
+    });
+
+    // When population toggle changes, refetch
+    usePopulation.addEventListener('change', () => {
+      redrawFromCacheOrFetch();
+    });
+
+    // Debounced live-update on weather changes
+    let _weatherDebounce = null;
+    function debounceRedrawWeather() {
+      if (_weatherDebounce) clearTimeout(_weatherDebounce);
+      _weatherDebounce = setTimeout(() => {
+        drawRiskMap();
+      }, 400);
+    }
+    [weatherTemp, weatherHumidity, weatherRain, weatherWind].forEach(el => {
+      el.addEventListener('input', debounceRedrawWeather);
+    });
+
+    // Color helpers
+    function interpolateColor(c1,c2,t){
+      const n1=parseInt(c1.slice(1),16), n2=parseInt(c2.slice(1),16);
+      const r1=n1>>16, g1=(n1>>8)&0xff, b1=n1&0xff;
+      const r2=n2>>16, g2=(n2>>8)&0xff, b2=n2&0xff;
+      const r=Math.round(r1+(r2-r1)*t),
+            g=Math.round(g1+(g2-g1)*t),
+            b=Math.round(b1+(b2-b1)*t);
+      return '#'+((1<<24)|(r<<16)|(g<<8)|b).toString(16).slice(1);
+    }
+    function interpColor(v){
+      const denom = (maxRisk - minRisk) || 1e-9;
+      const ratio = Math.min(Math.max((v-minRisk)/denom,0),1);
+      return ratio<0.5
+        ? interpolateColor('#ffff00','#ff0000', ratio*2)
+        : interpolateColor('#ff0000','#800080', (ratio-0.5)*2);
+    }
+
+    // Cache last fetched grid
+    let lastGridData = null;
+
+    // Decide which risk field to visualize
+    function getRiskValue(p) {
+      const field = usePopulation.checked ? "risk_pop" : "risk_raw";
+      return p ? p[field] : null;
+    }
+
+    // Set min/max based on toggle and backend-provided values
+    function setActiveMinMaxFromBackend(data) {
+      if (typeof data.min_risk_raw === "number") minRiskRaw = data.min_risk_raw;
+      if (typeof data.max_risk_raw === "number") maxRiskRaw = data.max_risk_raw;
+      if (typeof data.min_risk_pop === "number") minRiskPop = data.min_risk_pop;
+      if (typeof data.max_risk_pop === "number") maxRiskPop = data.max_risk_pop;
+
+      if (usePopulation.checked) {
+        minRisk = minRiskPop; maxRisk = maxRiskPop;
+      } else {
+        minRisk = minRiskRaw; maxRisk = maxRiskRaw;
+      }
+    }
+
+    // ============================================================
+    // NEW: Mosquito popup + totals helpers
+    // ============================================================
+
+    function formatMosq(n) {
+      if (typeof n !== "number" || isNaN(n)) return null;
+      if (n === 0) return "0";
+      if (n < 0.01) return "<0.01";
+      if (n < 0.1) return "<0.1";
+      if (n < 1) return n.toFixed(2);
+      if (n < 10) return n.toFixed(1);
+      if (n < 1000) return n.toFixed(0);
+      return n.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    }
+
+    function formatPct(n) {
+      if (typeof n !== "number" || isNaN(n)) return null;
+      if (n < 0.01) return "<0.01%";
+      if (n < 1) return n.toFixed(2) + "%";
+      return n.toFixed(1) + "%";
+    }
+
+    function safeNum(x) {
+      return (typeof x === "number" && isFinite(x)) ? x : null;
+    }
+
+    function computeMosqTotals(points) {
+      let total = 0, infected = 0;
+      let saw = false;
+
+      for (const p of (points || [])) {
+        const t = safeNum(p.pred_mosq_total);
+        const i = safeNum(p.pred_mosq_infected);
+        if (t != null) { total += t; saw = true; }
+        if (i != null) { infected += i; saw = true; }
+      }
+
+      const prev = (total > 0) ? (100.0 * infected / total) : 0.0;
+      return { total, infected, prev, saw };
+    }
+
+    function renderMosqTotalsLine(points, label) {
+      const el = document.getElementById("mosqTotalsLine");
+      if (!el) return;
+
+      const { total, infected, prev, saw } = computeMosqTotals(points);
+      if (!saw) { el.textContent = ""; return; }
+
+      el.innerHTML =
+        `<b>${label} totals:</b> ` +
+        `Total mosq ≈ ${formatMosq(total)}, ` +
+        `Infected ≈ ${formatMosq(infected)}, ` +
+        `Prev ≈ ${formatPct(prev)}`;
+    }
+
+    function pointPopupHTML(p, label) {
+      const sp = p.Species ?? "Unknown";
+
+      const vRaw = safeNum(p.risk_raw);
+      const vPop = safeNum(p.risk_pop);
+
+      const pop  = safeNum(p.pop_density);
+      const popw = safeNum(p.pop_weight);
+      const popm = safeNum(p.pop_multiplier);
+
+      // NEW abundance outputs
+      const mosqTotal = safeNum(p.pred_mosq_total);
+      const mosqInf   = safeNum(p.pred_mosq_infected);
+      const prevPct   = safeNum(p.pred_prevalence);
+
+      // Back-compat: older proxy fields (if present)
+      const proxy = safeNum(p.pred_mosq_infected_proxy ?? p.pred_infected_mosq_proxy ?? p.pred_infected_proxy);
+
+      const chosen = usePopulation.checked ? vPop : vRaw;
+
+      const lines = [];
+
+      if (typeof chosen === "number") {
+        lines.push(`<b>${label} risk (${usePopulation.checked ? "with pop" : "no pop"}):</b> ${(chosen*100).toFixed(1)}%`);
+      }
+      if (vRaw != null) lines.push(`<b>Risk (no pop):</b> ${(vRaw*100).toFixed(1)}%`);
+      if (vPop != null) lines.push(`<b>Risk (with pop):</b> ${(vPop*100).toFixed(1)}%`);
+
+      if (mosqTotal != null) lines.push(`<b>Total mosquitoes per single trap-night(expected):</b> ${formatMosq(mosqTotal)}`);
+      if (mosqInf != null)   lines.push(`<b>Infected mosquitoes per single trap-night(expected):</b> ${formatMosq(mosqInf)}`);
+
+      if (prevPct != null) {
+        lines.push(`<b>Infection prevalence:</b> ${formatPct(prevPct)}`);
+      } else if (mosqTotal != null && mosqInf != null) {
+        const prev = (mosqTotal > 0) ? (100 * mosqInf / mosqTotal) : 0;
+        lines.push(`<b>Infection prevalence:</b> ${formatPct(prev)}`);
+      }
+
+      if (proxy != null) lines.push(`<b>Pred. infected mosq (proxy):</b> ${formatMosq(proxy)}`);
+
+      lines.push(`<b>Species:</b> ${sp}`);
+
+      if (pop != null)  lines.push(`<b>Pop density:</b> ${pop.toFixed(0)}`);
+      if (popw != null) lines.push(`<b>Pop weight:</b> ${popw.toFixed(2)}`);
+      if (popm != null) lines.push(`<b>Pop multiplier:</b> ${popm.toFixed(2)}`);
+
+      return lines.join("<br>");
+    }
+
+    function clearAll() {
+      riskLayer.clearLayers();
+      beforeLayer.clearLayers();
+      afterLayer.clearLayers();
+      sprayLayer.clearLayers();
+    }
+
+    // If backend returns meta.weather_used, display it
+    function updateStatusFromMeta(meta) {
+      try {
+        if (!meta) return;
+        const wu = meta.weather_used || null;
+        if (wu) {
+          const unitNote = "Temp is °C (metric).";
+          let msg =
+            `Weather used: T=${Number(wu.temp).toFixed(1)}°C, H=${Number(wu.humidity).toFixed(0)}%, ` +
+            `R=${Number(wu.rain).toFixed(2)}, W=${Number(wu.wind_speed).toFixed(1)}. ${unitNote}`;
+          setStatus(msg);
+        } else {
+          setStatus("Loaded. (No meta.weather_used returned by backend)");
+        }
+      } catch (e) {
+        setStatus("Loaded.");
+      }
+    }
+
+    async function drawRiskMap(){
+      const y=+yearInput.value, w=+weekInput.value;
+
+      const ps = +popStrength.value;
+      const pr=+popRadius.value;
+
+      const hs = +histStrength.value;
+      const hr = +histRadius.value;
+      const sf = smoothFinal.checked ? "true" : "false";
+      const sk = +smoothK.value;
+      const ss = +smoothSigma.value;
+
+      const t=+weatherTemp.value, h=+weatherHumidity.value, r=+weatherRain.value, wv=+weatherWind.value;
+
+      const url =
+        `${API_BASE}/grid?year=${y}&week=${w}` +
+        `&use_population=${usePopulation.checked ? "true" : "false"}` +
+        `&pop_strength=${ps}&pop_radius_km=${pr}` +
+        `&hist_strength=${hs}&hist_radius_km=${hr}` +
+        `&smooth_final=${sf}&smooth_k=${sk}&smooth_sigma_km=${ss}` +
+        `&temp=${t}&humidity=${h}&rain=${r}&wind_speed=${wv}`;
+
+      loadingOverlay.style.display = 'flex';
+      setStatus("Loading grid...");
+      try {
+        const res=await fetch(url);
+        const data=await res.json();
+
+        setActiveMinMaxFromBackend(data);
+        lastGridData = data;
+
+        updateStatusFromMeta(data.meta);
+        renderMosqTotalsLine(data.grid || [], "Grid"); // NEW totals line
+
+        riskLayer.clearLayers();
+        beforeLayer.clearLayers();
+        afterLayer.clearLayers();
+
+        (data.grid || []).forEach(p=>{
+          const v = getRiskValue(p);
+          if (typeof v!=='number'||isNaN(v)) return;
+
+          const marker = L.circleMarker([p.Latitude,p.Longitude],{
+            pane: 'riskPane',
+            radius:4,
+            color:interpColor(v),
+            fillOpacity:0.2+0.6*((v-minRisk)/((maxRisk-minRisk)||1e-9)),
+            weight:0
+          }).bindPopup(pointPopupHTML(p, "Predicted"));
+
+          marker.addTo(riskLayer);
+
+          if(showBefore.checked){
+            marker.addTo(beforeLayer);
+          }
+        });
+
+      } catch(err){
+        console.error(err);
+        setStatus("Error loading risk (see console).");
+        alert('Error loading risk; check console.');
+      } finally {
+        loadingOverlay.style.display = 'none';
+      }
+    }
+
+    function redrawFromCacheOrFetch() {
+      return drawRiskMap();
+    }
+
+    updateBtn.addEventListener('click', drawRiskMap);
+    planSprayBtn.addEventListener('click', planSpray);
+
+    async function planSpray() {
+      loadingOverlay.style.display = 'flex';
+      setStatus("Planning spray...");
+
+      const payload = {
+        year: +yearInput.value,
+        week: +weekInput.value,
+
+        use_population: !!usePopulation.checked,
+        pop_strength: +popStrength.value,
+        pop_radius_km: +popRadius.value,
+
+        hist_strength: +histStrength.value,
+        hist_radius_km: +histRadius.value,
+
+        smooth_final: !!smoothFinal.checked,
+        smooth_k: +smoothK.value,
+        smooth_sigma_km: +smoothSigma.value,
+
+        num_trucks: +sprayCount.value,
+
+        temp: +weatherTemp.value,
+        humidity: +weatherHumidity.value,
+        rain: +weatherRain.value,
+        wind_speed: +weatherWind.value,
+
+        spray_radius_km: +sprayRadiusInput.value,
+
+        polygon: currentPoly ? currentPoly.toGeoJSON().geometry : null
+      };
+
+      let data;
+      try {
+        const res = await fetch(`${API_BASE}/spray`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!res.ok) throw await res.text();
+        data = await res.json();
+      } catch (err) {
+        console.error('Spray error:', err);
+        setStatus("Error planning spray (see console).");
+        alert('Error planning spray; check console.');
+        loadingOverlay.style.display = 'none';
+        return;
+      }
+
+      if (typeof data.min_risk_pre === "number") minRisk = data.min_risk_pre;
+      if (typeof data.max_risk_pre === "number") maxRisk = data.max_risk_pre;
+
+      riskLayer.clearLayers();
+      beforeLayer.clearLayers();
+      afterLayer.clearLayers();
+      sprayLayer.clearLayers();
+
+      // NEW totals line for whichever view you're showing
+      if (showAfter.checked) {
+        renderMosqTotalsLine(data.grid_post_spray || [], "Post-spray");
+      } else {
+        renderMosqTotalsLine(data.grid_pre_spray || [], "Pre-spray");
+      }
+
+      // Pre-spray grid
+      if (showBefore.checked && Array.isArray(data.grid_pre_spray)) {
+        data.grid_pre_spray.forEach(p => {
+          const v = p.risk;
+          if (typeof v !== 'number' || isNaN(v)) return;
+          L.circleMarker([p.Latitude, p.Longitude], {
+            pane: 'riskPane',
+            radius: 4,
+            color: interpColor(v),
+            fillOpacity: 0.2 + 0.6 * v,
+            weight: 0
+          })
+          .bindPopup(pointPopupHTML(p, "Pre-spray"))
+          .addTo(beforeLayer);
+        });
+      }
+
+      // Spray circles + numbered site markers (above)
+      const sr_m = (+sprayRadiusInput.value) * 1000;
+      (data.sites || []).forEach((c, i) => {
+        L.circle([c.Latitude, c.Longitude], {
+          pane: 'sprayPane',
+          radius: sr_m,
+          color: 'blue',
+          fill: false,
+          weight: 2
+        }).addTo(sprayLayer);
+
+        L.marker([c.Latitude, c.Longitude], {
+          pane: 'sprayPane',
+          zIndexOffset: 10000,
+          icon: L.divIcon({
+            className: 'trap-pin',
+            html: `<span>${i + 1}</span>`,
+            iconSize: [24, 24],
+            iconAnchor: [12, 24]
+          })
+        })
+        .bindPopup(`<b>Spray #${i + 1}</b><br>${pointPopupHTML(c, "Site (pre)")}`)
+        .addTo(sprayLayer);
+      });
+
+      // Post-spray grid
+      if (showAfter.checked && Array.isArray(data.grid_post_spray)) {
+        data.grid_post_spray.forEach(p => {
+          const v = p.risk;
+          if (typeof v !== 'number' || isNaN(v)) return;
+          L.circleMarker([p.Latitude, p.Longitude], {
+            pane: 'riskPane',
+            radius: 4,
+            color: interpColor(v),
+            fillOpacity: 0.6,
+            weight: 0
+          })
+          .bindPopup(pointPopupHTML(p, "Post-spray"))
+          .addTo(afterLayer);
+        });
+      }
+
+      setStatus("Spray plan ready.");
+      loadingOverlay.style.display = 'none';
+    }
+
+    // initial load
+    setStatus("Loading...");
+    drawRiskMap();
+  });
+  </script>
+</body>
+</html>
