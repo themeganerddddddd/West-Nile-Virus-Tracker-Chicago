@@ -4,4 +4,17 @@ numpy
 scikit-learn
 scikit-learn-extra    # for KMeans with sample_weight support
 shapely
-folium
+foliumgunicorn
+flask
+flask-cors
+numpy
+pandas
+requests
+joblib
+scikit-learn
+shapely
+alphashape
+scipy
+patsy
+dimod
+dwave-neal
